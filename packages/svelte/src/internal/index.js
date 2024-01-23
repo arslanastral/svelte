@@ -1,6 +1,8 @@
 export {
+	current_consumer,
 	store_get,
 	get,
+	get_derived,
 	set,
 	set_sync,
 	invalidate_inner_signals,

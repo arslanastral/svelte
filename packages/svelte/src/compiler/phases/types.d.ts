@@ -100,4 +100,16 @@ declare module 'estree' {
 			scope: Scope;
 		};
 	}
+
+	interface ObjectPattern {
+		metadata?: {
+			identifiers: Map<string, Array<import('estree').Property | import('estree').RestElement>>;
+		};
+	}
+
+	interface ArrayPattern {
+		metadata?: {
+			identifiers: Map<string, Array<import('estree').Property | import('estree').RestElement>>;
+		};
+	}
 }

@@ -172,7 +172,7 @@ const runes = {
 	'invalid-props-location': () =>
 		`$props() can only be used at the top level of components as a variable declaration initializer`,
 	'invalid-derived-location': () =>
-		`$derived() can only be used as a variable declaration initializer or a class field`,
+		`$derived() can only be used as a variable declaration initializer, a class field or an object property initializer`,
 	'invalid-state-location': () =>
 		`$state() can only be used as a variable declaration initializer or a class field`,
 	'invalid-effect-location': () => `$effect() can only be used as an expression statement`,

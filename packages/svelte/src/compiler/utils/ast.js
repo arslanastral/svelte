@@ -1,4 +1,6 @@
+import { walk } from 'zimmerframe';
 import * as b from '../utils/builders.js';
+import is_reference from 'is-reference';
 
 /**
  * Gets the left-most identifier of a member expression or identifier.
@@ -56,23 +58,63 @@ export function is_event_attribute(attribute) {
 }
 
 /**
+ * @param {Array<import('estree').ObjectPattern | import('estree').ArrayPattern | import('estree').Property | import('estree').RestElement>} path
+ */
+function get_object_pattern_and_property(path) {
+	if (path.length > 1) {
+		const pattern = /** @type {import('estree').ObjectPattern | import('estree').ArrayPattern} */ (
+			path[0]
+		);
+		// We only handle associating identifiers with the properties for objects right now.
+		if (pattern.type === 'ObjectPattern') {
+			const property = /** @type {import('estree').Property | import('estree').RestElement} */ (
+				path[1]
+			);
+			return { pattern, property };
+		}
+	}
+	return null;
+}
+
+/**
  * Extracts all identifiers from a pattern.
  * @param {import('estree').Pattern} param
+ * @param {Array<import('estree').ObjectPattern | import('estree').ArrayPattern | import('estree').Property | import('estree').RestElement>} [path]
  * @param {import('estree').Identifier[]} [nodes]
  * @returns {import('estree').Identifier[]}
  */
-export function extract_identifiers(param, nodes = []) {
+export function extract_identifiers(param, path = [], nodes = []) {
 	switch (param.type) {
-		case 'Identifier':
+		case 'Identifier': {
+			const pattern_and_property = get_object_pattern_and_property(path);
+			// We get our object expression and reference what declaration identifiers
+			// belong to each of the top level properties of the object pattern. This
+			// enables us to easily identify what dependencies each object property has
+			// to enable fine-grain destructuring.
+			if (pattern_and_property !== null) {
+				const { pattern, property } = pattern_and_property;
+				let metadata = pattern.metadata;
+				if (metadata == null) {
+					pattern.metadata = metadata = {
+						identifiers: new Map()
+					};
+				}
+				let properties = metadata.identifiers.get(param.name);
+				if (properties === undefined) {
+					properties = [];
+					metadata.identifiers.set(param.name, properties);
+				}
+				properties.push(property);
+			}
 			nodes.push(param);
 			break;
-
+		}
 		case 'ObjectPattern':
 			for (const prop of param.properties) {
 				if (prop.type === 'RestElement') {
-					extract_identifiers(prop.argument, nodes);
+					extract_identifiers(prop.argument, [...path, param, prop], nodes);
 				} else {
-					extract_identifiers(prop.value, nodes);
+					extract_identifiers(prop.value, [...path, param, prop], nodes);
 				}
 			}
 
@@ -80,18 +122,50 @@ export function extract_identifiers(param, nodes = []) {
 
 		case 'ArrayPattern':
 			for (const element of param.elements) {
-				if (element) extract_identifiers(element, nodes);
+				if (element) extract_identifiers(element, [...path, param], nodes);
 			}
 
 			break;
 
 		case 'RestElement':
-			extract_identifiers(param.argument, nodes);
+			extract_identifiers(param.argument, path, nodes);
 			break;
 
-		case 'AssignmentPattern':
-			extract_identifiers(param.left, nodes);
+		case 'AssignmentPattern': {
+			const dec_nodes = extract_identifiers(param.left, path, []);
+			nodes.push(...dec_nodes);
+			const pattern_and_property = get_object_pattern_and_property(path);
+			// If the left side creates declarations that reference other declarations in the object pattern,
+			// then we need to also ensure that the referencing properties for the left side declarations.
+			// i.e. { a, b = a } = some_object
+			if (pattern_and_property !== null && dec_nodes.length > 0) {
+				const { pattern } = pattern_and_property;
+				const metadata = pattern.metadata;
+				if (metadata != null) {
+					walk(
+						param.right,
+						{},
+						{
+							Identifier(node, { path }) {
+								const parent = /** @type {import('estree').Node} */ (path.at(-1));
+								if (is_reference(node, parent)) {
+									const properties = metadata.identifiers.get(node.name);
+									if (properties !== undefined) {
+										for (const dec_node of dec_nodes) {
+											const dec_properties = metadata.identifiers.get(dec_node.name);
+											if (dec_properties !== null) {
+												dec_properties?.push(...properties);
+											}
+										}
+									}
+								}
+							}
+						}
+					);
+				}
+			}
 			break;
+		}
 	}
 
 	return nodes;

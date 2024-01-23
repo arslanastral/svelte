@@ -67,7 +67,7 @@ let flush_count = 0;
 // Handle signal reactivity tree dependencies and consumer
 
 /** @type {null | import('./types.js').ComputationSignal} */
-let current_consumer = null;
+export let current_consumer = null;
 
 /** @type {null | import('./types.js').EffectSignal} */
 export let current_effect = null;
@@ -79,6 +79,9 @@ let current_dependencies_index = 0;
 let current_untracked_writes = null;
 /** @type {null | import('./types.js').SignalDebug} */
 let last_inspected_signal = null;
+
+/** @type {null | import('./types.js').Signal} */
+let current_derived_object = null;
 /** If `true`, `get`ting the signal should not register it as a dependency */
 export let current_untracking = false;
 /** Exists to opt out of the mutation validation for stores which may be set for the first time during a derivation */
@@ -932,6 +935,23 @@ export function unsubscribe_on_destroy(stores) {
 }
 
 /**
+ * @param {import("./types.js").ComputationSignal} consumer
+ * @param {import("./types.js").Signal<any>} signal
+ */
+export function get_derived(consumer, signal) {
+	const previous_derived_object = current_derived_object;
+	if (consumer === null || (consumer.f & DERIVED) === 0) {
+		return get(signal);
+	}
+	try {
+		current_derived_object = consumer;
+		return get(signal);
+	} finally {
+		current_derived_object = previous_derived_object;
+	}
+}
+
+/**
  * @template V
  * @param {import('./types.js').Signal<V>} signal
  * @returns {V}
@@ -955,6 +975,23 @@ export function get(signal) {
 
 	// Register the dependency on the current consumer signal.
 	if (current_consumer !== null && (current_consumer.f & MANAGED) === 0 && !current_untracking) {
+		// Check if the current_derived_object matches our last derived dependency (or its last dependency).
+		// If so, then remove the current_derived_object from the current tracked dependencies.
+		if (current_derived_object !== null && current_dependencies !== null) {
+			const last_dependency = current_dependencies[current_dependencies.length - 1];
+			if ((last_dependency.f & DERIVED) !== 0) {
+				const last_derived = /** @type {import('./types.js').ComputationSignal} */ (
+					last_dependency
+				);
+				const current_value = current_derived_object.v;
+				const can_remove_last_dependency =
+					current_value === last_derived.v || current_value === last_derived.d?.at(-1)?.v;
+				if (can_remove_last_dependency) {
+					current_dependencies.pop();
+				}
+			}
+		}
+
 		const unowned = (current_consumer.f & UNOWNED) !== 0;
 		const dependencies = current_consumer.d;
 		if (
@@ -971,7 +1008,7 @@ export function get(signal) {
 		) {
 			if (current_dependencies === null) {
 				current_dependencies = [signal];
-			} else if (signal !== current_dependencies[current_dependencies.length - 1]) {
+			} else {
 				current_dependencies.push(signal);
 			}
 		}
