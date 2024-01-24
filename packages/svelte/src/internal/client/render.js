@@ -2974,18 +2974,3 @@ function get_root_for_style(node) {
 	}
 	return /** @type {Document} */ (node.ownerDocument);
 }
-
-/**
- * @param {Record<string | symbol, unknown>} object
- * @param {Array<string | symbol>} exclude
- */
-export function rest_object(object, exclude) {
-	/** @type {Record<string | symbol, unknown>} */
-	let rest = {};
-	for (let property in object) {
-		if (!exclude.includes(property)) {
-			rest[property] = object[property];
-		}
-	}
-	return rest;
-}

@@ -59,6 +59,9 @@ let current_queued_pre_and_render_effects = [];
 /** @type {import('./types.js').EffectSignal[]} */
 let current_queued_effects = [];
 
+/** @type {{t: import('./types.js').ComputationSignal, p: Array<string | symbol>, r: import('./types.js').ComputationSignal } | null} */
+let current_path = null;
+
 /** @type {Array<() => void>} */
 let current_queued_tasks = [];
 /** @type {Array<() => void>} */
@@ -67,7 +70,7 @@ let flush_count = 0;
 // Handle signal reactivity tree dependencies and consumer
 
 /** @type {null | import('./types.js').ComputationSignal} */
-export let current_consumer = null;
+let current_consumer = null;
 
 /** @type {null | import('./types.js').EffectSignal} */
 export let current_effect = null;
@@ -80,8 +83,6 @@ let current_untracked_writes = null;
 /** @type {null | import('./types.js').SignalDebug} */
 let last_inspected_signal = null;
 
-/** @type {null | import('./types.js').Signal} */
-let current_derived_object = null;
 /** If `true`, `get`ting the signal should not register it as a dependency */
 export let current_untracking = false;
 /** Exists to opt out of the mutation validation for stores which may be set for the first time during a derivation */
@@ -330,6 +331,7 @@ function is_signal_dirty(signal) {
  */
 function execute_signal_fn(signal) {
 	const init = signal.i;
+	const flags = signal.f;
 	const previous_dependencies = current_dependencies;
 	const previous_dependencies_index = current_dependencies_index;
 	const previous_untracked_writes = current_untracked_writes;
@@ -337,16 +339,18 @@ function execute_signal_fn(signal) {
 	const previous_block = current_block;
 	const previous_component_context = current_component_context;
 	const previous_skip_consumer = current_skip_consumer;
-	const is_render_effect = (signal.f & RENDER_EFFECT) !== 0;
+	const is_render_effect = (flags & RENDER_EFFECT) !== 0;
 	const previous_untracking = current_untracking;
+	const previous_path = current_path;
 	current_dependencies = /** @type {null | import('./types.js').Signal[]} */ (null);
 	current_dependencies_index = 0;
 	current_untracked_writes = null;
 	current_consumer = signal;
 	current_block = signal.b;
 	current_component_context = signal.x;
-	current_skip_consumer = !is_flushing_effect && (signal.f & UNOWNED) !== 0;
+	current_skip_consumer = !is_flushing_effect && (flags & UNOWNED) !== 0;
 	current_untracking = false;
+	current_path = null;
 
 	// Render effects are invoked when the UI is about to be updated - run beforeUpdate at that point
 	if (is_render_effect && current_component_context?.u != null) {
@@ -366,6 +370,9 @@ function execute_signal_fn(signal) {
 				);
 		} else {
 			res = /** @type {() => V} */ (init)();
+		}
+		if (current_path !== null) {
+			push_derived_path();
 		}
 		let dependencies = /** @type {import('./types.js').Signal<unknown>[]} **/ (signal.d);
 		if (current_dependencies !== null) {
@@ -415,6 +422,10 @@ function execute_signal_fn(signal) {
 					if (consumers === null) {
 						dependency.c = [signal];
 					} else if (consumers[consumers.length - 1] !== signal) {
+						// TODO: should this be:
+						//
+						// } else if (!consumers.includes(signal)) {
+						//
 						consumers.push(signal);
 					}
 				}
@@ -433,6 +444,7 @@ function execute_signal_fn(signal) {
 		current_component_context = previous_component_context;
 		current_skip_consumer = previous_skip_consumer;
 		current_untracking = previous_untracking;
+		current_path = previous_path;
 	}
 }
 
@@ -934,21 +946,28 @@ export function unsubscribe_on_destroy(stores) {
 	});
 }
 
-/**
- * @param {import("./types.js").ComputationSignal} consumer
- * @param {import("./types.js").Signal<any>} signal
- */
-export function get_derived(consumer, signal) {
-	const previous_derived_object = current_derived_object;
-	if (consumer === null || (consumer.f & DERIVED) === 0) {
-		return get(signal);
+function push_derived_path() {
+	const path =
+		/** @type {{t: import('./types.js').ComputationSignal, p: Array<string | symbol>, r: import('./types.js').ComputationSignal }} */ (
+			current_path
+		);
+	if (is_last_current_dependency(path.r)) {
+		if (current_dependencies === null) {
+			current_dependencies_index--;
+		} else {
+			current_dependencies.pop();
+		}
 	}
-	try {
-		current_derived_object = consumer;
-		return get(signal);
-	} finally {
-		current_derived_object = previous_derived_object;
-	}
+	const derived_prop = derived(() => {
+		let value = /** @type {any} */ (get(path.t));
+		const property_path = path.p;
+		for (let i = 0; i < property_path.length; i++) {
+			value = value?.[property_path[i]];
+		}
+		return value;
+	});
+	current_path = null;
+	get(derived_prop);
 }
 
 /**
@@ -969,29 +988,16 @@ export function get(signal) {
 		return signal.v;
 	}
 
+	if (current_path !== null) {
+		push_derived_path();
+	}
+
 	if (is_signals_recorded) {
 		captured_signals.add(signal);
 	}
 
 	// Register the dependency on the current consumer signal.
 	if (current_consumer !== null && (current_consumer.f & MANAGED) === 0 && !current_untracking) {
-		// Check if the current_derived_object matches our last derived dependency (or its last dependency).
-		// If so, then remove the current_derived_object from the current tracked dependencies.
-		if (current_derived_object !== null && current_dependencies !== null) {
-			const last_dependency = current_dependencies[current_dependencies.length - 1];
-			if ((last_dependency.f & DERIVED) !== 0) {
-				const last_derived = /** @type {import('./types.js').ComputationSignal} */ (
-					last_dependency
-				);
-				const current_value = current_derived_object.v;
-				const can_remove_last_dependency =
-					current_value === last_derived.v || current_value === last_derived.d?.at(-1)?.v;
-				if (can_remove_last_dependency) {
-					current_dependencies.pop();
-				}
-			}
-		}
-
 		const unowned = (current_consumer.f & UNOWNED) !== 0;
 		const dependencies = current_consumer.d;
 		if (
@@ -1350,6 +1356,120 @@ export function derived(init) {
 }
 
 /**
+ * @param {any} value
+ */
+function should_proxy_derived_value(value) {
+	let prototype;
+	return (
+		(typeof value === 'object' &&
+			value !== null &&
+			(prototype = get_prototype_of(value)) === object_prototype) ||
+		prototype === array_prototype
+	);
+}
+
+/**
+ * @param {import("./types.js").SourceSignal<unknown>} signal
+ */
+function is_last_current_dependency(signal) {
+	if (current_dependencies !== null) {
+		return current_dependencies[current_dependencies.length - 1] === signal;
+	} else if (current_consumer !== null && current_dependencies_index > 0) {
+		return current_consumer.d?.[current_dependencies_index - 1] === signal;
+	}
+	return false;
+}
+
+/**
+ * @template V
+ * @param {() => any} init
+ * @returns {import('./types.js').ComputationSignal<V>}
+ */
+/*#__NO_SIDE_EFFECTS__*/
+export function derived_proxy(init) {
+	const derived_object = derived(init);
+	const proxied_objects = new Map();
+
+	/**
+	 * @param {V} value
+	 * @param {(string | symbol)[]} path
+	 * @returns {V}
+	 */
+	function proxify_object(value, path) {
+		const keys = new Set(Reflect.ownKeys(/** @type {object} */ (value)));
+		const proxy = new Proxy(value, handler);
+		proxied_objects.set(value, {
+			x: proxy,
+			k: keys,
+			p: path
+		});
+		return proxy;
+	}
+
+	const handler = {
+		/**
+		 * @param {any} target
+		 * @param {string | symbol} prop
+		 * @param {any} receiver
+		 */
+		get(target, prop, receiver) {
+			const value = Reflect.get(target, prop, receiver);
+			const { k: keys, p: path } = proxied_objects.get(target);
+
+			if (
+				(effect_active_and_not_render_effect() || updating_derived) &&
+				keys.has(prop) &&
+				is_last_current_dependency(proxied_derived)
+			) {
+				const type = typeof value;
+				let new_path;
+				// We only track paths for primitives or state objects, to avoid tracking objects
+				// that likely change all the time.
+				if (
+					value === void 0 ||
+					type === 'string' ||
+					type === 'number' ||
+					type === 'boolean' ||
+					type === 'symbol' ||
+					type === 'bigint' ||
+					type === null ||
+					STATE_SYMBOL in value
+				) {
+					new_path = [...path, prop];
+					if (current_path !== null) {
+						push_derived_path();
+					} else {
+						current_path = { t: derived_object, p: new_path, r: proxied_derived };
+					}
+				}
+				if (should_proxy_derived_value(value)) {
+					const possible_proxy = proxied_objects.get(value);
+					if (possible_proxy !== undefined) {
+						return possible_proxy.x;
+					}
+					if (!new_path) {
+						new_path = [...path, prop];
+					}
+					return proxify_object(value, new_path);
+				}
+			}
+			return value;
+		}
+	};
+
+	const proxied_derived = derived(() => {
+		const value = get(derived_object);
+		if (should_proxy_derived_value(value)) {
+			return proxify_object(value, []);
+		} else if (proxied_objects.size > 0) {
+			proxied_objects.clear();
+		}
+		return value;
+	});
+	return proxied_derived;
+}
+
+/**
  * @template V
  * @param {() => V} init
  * @returns {import('./types.js').ComputationSignal<V>}
@@ -1432,6 +1552,13 @@ function internal_create_effect(type, init, sync, block, schedule) {
  */
 export function effect_active() {
 	return current_effect ? (current_effect.f & MANAGED) === 0 : false;
+}
+
+/**
+ * @returns {boolean}
+ */
+function effect_active_and_not_render_effect() {
+	return current_effect ? (current_effect.f & (MANAGED | RENDER_EFFECT)) === 0 : false;
 }
 
 /**

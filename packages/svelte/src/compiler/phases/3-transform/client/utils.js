@@ -7,7 +7,6 @@ import {
 	PROPS_IS_RUNES,
 	PROPS_IS_UPDATED
 } from '../../../../constants.js';
-import { get_rune } from '../../scope.js';
 
 /**
  * @template {import('./types').ClientTransformState} State
@@ -657,24 +656,4 @@ export function should_proxy_or_freeze(node, scope) {
 		}
 	}
 	return true;
-}
-
-/**
- * @param {import("estree").Property | import("estree").SpreadElement} property
- * @param {import("../../scope.js").Scope} scope
- */
-export function is_derived_object_property(property, scope) {
-	return (
-		property.type === 'Property' &&
-		property.value.type === 'CallExpression' &&
-		get_rune(property.value, scope) === '$derived'
-	);
-}
-
-/**
- * @param {import("estree").ObjectExpression} node
- * @param {import("../../scope.js").Scope} scope
- */
-export function has_derived_properties(node, scope) {
-	return node.properties.some((property) => is_derived_object_property(property, scope));
 }
