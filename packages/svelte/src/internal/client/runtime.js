@@ -1466,6 +1466,12 @@ export function derived_proxy(init) {
 		}
 		return value;
 	});
+
+	// Cleanup when the derived is destroyed
+	proxied_derived.y = () => {
+		proxied_objects.clear();
+	}
+
 	return proxied_derived;
 }
 
