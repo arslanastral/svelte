@@ -91,7 +91,6 @@ let ignore_mutation_validation = false;
 // If we are working with a get() chain that has no active container,
 // to prevent memory leaks, we skip adding the consumer.
 let current_skip_consumer = false;
-let current_skip_proxy_derived = false;
 // Handle collecting all signals which are read during a specific time frame
 let is_signals_recorded = false;
 let captured_signals = new Set();
@@ -967,21 +966,15 @@ function push_derived_proxy_get() {
 		}
 	}
 	const derived_prop = derived(() => {
-		const previous_skip_proxy_derived = current_skip_proxy_derived;
-		current_skip_proxy_derived = true;
-		try {
-			let value = /** @type {any} */ (get(derived_property.s));
-			const property_path = derived_property.p;
-			for (let i = 0; i < property_path.length; i++) {
-				value = value?.[property_path[i]];
-			}
-			return value;
-		} finally {
-			current_skip_proxy_derived = previous_skip_proxy_derived;
+		let value = /** @type {any} */ (get(derived_property.s, true));
+		const property_path = derived_property.p;
+		for (let i = 0; i < property_path.length; i++) {
+			value = value?.[property_path[i]];
 		}
+		return value;
 	});
 	current_derived_proxy_property = null;
-	get(derived_prop);
+	get(derived_prop, true);
 }
 
 /**
@@ -989,7 +982,7 @@ function push_derived_proxy_get() {
  * @param {import('./types.js').Signal<V>} signal
  * @returns {V}
  */
-export function get(signal) {
+export function get(signal, skip_derived_proxy = false) {
 	// @ts-expect-error
 	if (DEV && signal.inspect && inspect_fn) {
 		/** @type {import('./types.js').SignalDebug} */ (signal).inspect.add(inspect_fn);
@@ -1064,7 +1057,7 @@ export function get(signal) {
 		);
 		const value = derived_signal_value.v;
 		if (
-			!current_skip_proxy_derived &&
+			!skip_derived_proxy &&
 			is_runes(signal.x) &&
 			effect_active_and_not_render_effect() &&
 			should_proxy_derived_value(value)
