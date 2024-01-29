@@ -60,7 +60,7 @@ let current_queued_pre_and_render_effects = [];
 let current_queued_effects = [];
 
 /** @type {{ s: import('./types.js').ComputationSignal, p: Array<string | symbol> } | null} */
-let current_path = null;
+let current_derived_proxy_property = null;
 
 /** @type {Array<() => void>} */
 let current_queued_tasks = [];
@@ -342,7 +342,7 @@ function execute_signal_fn(signal) {
 	const previous_skip_consumer = current_skip_consumer;
 	const is_render_effect = (flags & RENDER_EFFECT) !== 0;
 	const previous_untracking = current_untracking;
-	const previous_path = current_path;
+	const previous_derived_proxy_property = current_derived_proxy_property;
 	current_dependencies = /** @type {null | import('./types.js').Signal[]} */ (null);
 	current_dependencies_index = 0;
 	current_untracked_writes = null;
@@ -351,7 +351,7 @@ function execute_signal_fn(signal) {
 	current_component_context = signal.x;
 	current_skip_consumer = !is_flushing_effect && (flags & UNOWNED) !== 0;
 	current_untracking = false;
-	current_path = null;
+	current_derived_proxy_property = null;
 
 	// Render effects are invoked when the UI is about to be updated - run beforeUpdate at that point
 	if (is_render_effect && current_component_context?.u != null) {
@@ -372,8 +372,8 @@ function execute_signal_fn(signal) {
 		} else {
 			res = /** @type {() => V} */ (init)();
 		}
-		if (current_path !== null) {
-			push_derived_path();
+		if (current_derived_proxy_property !== null) {
+			push_derived_proxy_get();
 		}
 		let dependencies = /** @type {import('./types.js').Signal<unknown>[]} **/ (signal.d);
 		if (current_dependencies !== null) {
@@ -445,7 +445,7 @@ function execute_signal_fn(signal) {
 		current_component_context = previous_component_context;
 		current_skip_consumer = previous_skip_consumer;
 		current_untracking = previous_untracking;
-		current_path = previous_path;
+		current_derived_proxy_property = previous_derived_proxy_property;
 	}
 }
 
@@ -955,12 +955,12 @@ export function unsubscribe_on_destroy(stores) {
 	});
 }
 
-function push_derived_path() {
-	const path =
+function push_derived_proxy_get() {
+	const derived_property =
 		/** @type {{ s: import('./types.js').ComputationSignal, p: Array<string | symbol> }} */ (
-			current_path
+			current_derived_proxy_property
 		);
-	if (is_last_current_dependency(path.s)) {
+	if (is_last_current_dependency(derived_property.s)) {
 		if (current_dependencies === null) {
 			current_dependencies_index--;
 		} else {
@@ -971,8 +971,8 @@ function push_derived_path() {
 		const previous_skip_proxy_derived = current_skip_proxy_derived;
 		current_skip_proxy_derived = true;
 		try {
-			let value = /** @type {any} */ (get(path.s));
-			const property_path = path.p;
+			let value = /** @type {any} */ (get(derived_property.s));
+			const property_path = derived_property.p;
 			for (let i = 0; i < property_path.length; i++) {
 				value = value?.[property_path[i]];
 			}
@@ -981,7 +981,7 @@ function push_derived_path() {
 			current_skip_proxy_derived = previous_skip_proxy_derived;
 		}
 	});
-	current_path = null;
+	current_derived_proxy_property = null;
 	get(derived_prop);
 }
 
@@ -1007,8 +1007,8 @@ export function get(signal) {
 		);
 	}
 
-	if (current_path !== null) {
-		push_derived_path();
+	if (current_derived_proxy_property !== null) {
+		push_derived_proxy_get();
 	}
 
 	if (is_signals_recorded) {
@@ -1468,10 +1468,10 @@ function create_derived_proxy(signal, derived_value) {
 					STATE_SYMBOL in value
 				) {
 					new_path = [...path, prop];
-					if (current_path !== null) {
-						push_derived_path();
+					if (current_derived_proxy_property !== null) {
+						push_derived_proxy_get();
 					} else {
-						current_path = { s: signal, p: new_path };
+						current_derived_proxy_property = { s: signal, p: new_path };
 					}
 				}
 				if (should_proxy_derived_value(value)) {
