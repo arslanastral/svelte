@@ -59,7 +59,7 @@ let current_queued_pre_and_render_effects = [];
 /** @type {import('./types.js').EffectSignal[]} */
 let current_queued_effects = [];
 
-/** @type {{t: import('./types.js').ComputationSignal, p: Array<string | symbol>, r: import('./types.js').ComputationSignal } | null} */
+/** @type {{ s: import('./types.js').ComputationSignal, p: Array<string | symbol> } | null} */
 let current_path = null;
 
 /** @type {Array<() => void>} */
@@ -91,6 +91,7 @@ let ignore_mutation_validation = false;
 // If we are working with a get() chain that has no active container,
 // to prevent memory leaks, we skip adding the consumer.
 let current_skip_consumer = false;
+let current_skip_proxy_derived = false;
 // Handle collecting all signals which are read during a specific time frame
 let is_signals_recorded = false;
 let captured_signals = new Set();
@@ -536,7 +537,7 @@ export function execute_effect(signal) {
 	if ((signal.f & DESTROYED) !== 0) {
 		return;
 	}
-	const teardown = signal.v;
+	const teardown = /** @type {null | (() => void)} */ (signal.v);
 	const previous_effect = current_effect;
 	current_effect = signal;
 
@@ -830,16 +831,31 @@ export async function tick() {
  * @returns {void}
  */
 function update_derived(signal, force_schedule) {
+	let derived_value =
+		/** @type {import('./types.js').DerivedSignalValue<V> | typeof UNINITIALIZED} */ (signal.v);
+	if (derived_value === UNINITIALIZED) {
+		signal.v = derived_value = /** @type {import('./types.js').DerivedSignalValue<V>} */ ({
+			p: null,
+			v: UNINITIALIZED
+		});
+	}
 	const previous_updating_derived = updating_derived;
 	updating_derived = true;
+	if (derived_value.p !== null) {
+		if (typeof signal.y === 'function') {
+			signal.y();
+		}
+		derived_value.p = null;
+	}
 	destroy_references(signal);
 	const value = execute_signal_fn(signal);
 	updating_derived = previous_updating_derived;
 	const status = current_skip_consumer || (signal.f & UNOWNED) !== 0 ? DIRTY : CLEAN;
 	set_signal_status(signal, status);
 	const equals = /** @type {import('./types.js').EqualsFunctions} */ (signal.e);
-	if (!equals(value, signal.v)) {
-		signal.v = value;
+
+	if (!equals(value, derived_value.v)) {
+		derived_value.v = value;
 		mark_signal_consumers(signal, DIRTY, force_schedule);
 
 		// @ts-expect-error
@@ -941,10 +957,10 @@ export function unsubscribe_on_destroy(stores) {
 
 function push_derived_path() {
 	const path =
-		/** @type {{t: import('./types.js').ComputationSignal, p: Array<string | symbol>, r: import('./types.js').ComputationSignal }} */ (
+		/** @type {{ s: import('./types.js').ComputationSignal, p: Array<string | symbol> }} */ (
 			current_path
 		);
-	if (is_last_current_dependency(path.r)) {
+	if (is_last_current_dependency(path.s)) {
 		if (current_dependencies === null) {
 			current_dependencies_index--;
 		} else {
@@ -952,12 +968,18 @@ function push_derived_path() {
 		}
 	}
 	const derived_prop = derived(() => {
-		let value = /** @type {any} */ (get(path.t));
-		const property_path = path.p;
-		for (let i = 0; i < property_path.length; i++) {
-			value = value?.[property_path[i]];
+		const previous_skip_proxy_derived = current_skip_proxy_derived;
+		current_skip_proxy_derived = true;
+		try {
+			let value = /** @type {any} */ (get(path.s));
+			const property_path = path.p;
+			for (let i = 0; i < property_path.length; i++) {
+				value = value?.[property_path[i]];
+			}
+			return value;
+		} finally {
+			current_skip_proxy_derived = previous_skip_proxy_derived;
 		}
-		return value;
 	});
 	current_path = null;
 	get(derived_prop);
@@ -977,8 +999,12 @@ export function get(signal) {
 	}
 
 	const flags = signal.f;
+	const is_derived = (flags & DERIVED) !== 0;
+	let value = signal.v;
 	if ((flags & DESTROYED) !== 0) {
-		return signal.v;
+		return /** @type {V} */ (
+			is_derived ? /** @type {import('./types.js').DerivedSignalValue<V>} */ (value).v : value
+		);
 	}
 
 	if (current_path !== null) {
@@ -1022,18 +1048,40 @@ export function get(signal) {
 		}
 	}
 
-	if ((flags & DERIVED) !== 0 && is_signal_dirty(signal)) {
-		if (DEV) {
-			// we want to avoid tracking indirect dependencies
-			const previous_inspect_fn = inspect_fn;
-			inspect_fn = null;
-			update_derived(/** @type {import('./types.js').ComputationSignal<V>} **/ (signal), false);
-			inspect_fn = previous_inspect_fn;
-		} else {
-			update_derived(/** @type {import('./types.js').ComputationSignal<V>} **/ (signal), false);
+	if (is_derived) {
+		if (is_signal_dirty(signal)) {
+			if (DEV) {
+				// we want to avoid tracking indirect dependencies
+				const previous_inspect_fn = inspect_fn;
+				inspect_fn = null;
+				update_derived(/** @type {import('./types.js').ComputationSignal<V>} **/ (signal), false);
+				inspect_fn = previous_inspect_fn;
+			} else {
+				update_derived(/** @type {import('./types.js').ComputationSignal<V>} **/ (signal), false);
+			}
 		}
+		const derived_signal_value = /** @type {import('./types.js').DerivedSignalValue<V>} */ (
+			signal.v
+		);
+		const value = derived_signal_value.v;
+		if (
+			!current_skip_proxy_derived &&
+			is_runes(signal.x) &&
+			effect_active_and_not_render_effect() &&
+			should_proxy_derived_value(value)
+		) {
+			let proxy = derived_signal_value.p;
+			if (proxy === null) {
+				proxy = derived_signal_value.p = create_derived_proxy(
+					/** @type {import('./types.js').ComputationSignal<V>} **/ (signal),
+					value
+				);
+			}
+			return proxy;
+		}
+		return value;
 	}
-	return signal.v;
+	return /** @type {V} */ (signal.v);
 }
 
 /**
@@ -1366,12 +1414,12 @@ function is_last_current_dependency(signal) {
 
 /**
  * @template V
- * @param {() => any} init
- * @returns {import('./types.js').ComputationSignal<V>}
+ * @param {import("./types.js").ComputationSignal<V>} signal
+ * @param {V} derived_value
+ * @returns {V}
  */
 /*#__NO_SIDE_EFFECTS__*/
-export function derived_proxy(init) {
-	const derived_object = derived(init);
+function create_derived_proxy(signal, derived_value) {
 	const proxied_objects = new Map();
 
 	/**
@@ -1401,9 +1449,9 @@ export function derived_proxy(init) {
 			const { k: keys, p: path } = proxied_objects.get(target);
 
 			if (
-				(effect_active_and_not_render_effect() || updating_derived) &&
+				effect_active_and_not_render_effect() &&
 				keys.has(prop) &&
-				is_last_current_dependency(proxied_derived)
+				is_last_current_dependency(signal)
 			) {
 				const type = typeof value;
 				let new_path;
@@ -1423,7 +1471,7 @@ export function derived_proxy(init) {
 					if (current_path !== null) {
 						push_derived_path();
 					} else {
-						current_path = { t: derived_object, p: new_path, r: proxied_derived };
+						current_path = { s: signal, p: new_path };
 					}
 				}
 				if (should_proxy_derived_value(value)) {
@@ -1441,22 +1489,12 @@ export function derived_proxy(init) {
 		}
 	};
 
-	const proxied_derived = derived(() => {
-		const value = get(derived_object);
-		if (should_proxy_derived_value(value)) {
-			return proxify_object(value, []);
-		} else if (proxied_objects.size > 0) {
-			proxied_objects.clear();
-		}
-		return value;
-	});
-
-	// Cleanup when the derived is destroyed
-	proxied_derived.y = () => {
+	// Setup cleanup of proxied objects
+	signal.y = () => {
 		proxied_objects.clear();
 	};
 
-	return proxied_derived;
+	return proxify_object(derived_value, []);
 }
 
 /**

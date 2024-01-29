@@ -278,7 +278,7 @@ export const javascript_visitors_runes = {
 
 			if (rune === '$derived') {
 				if (declarator.id.type === 'Identifier') {
-					declarations.push(b.declarator(declarator.id, b.call('$.derived_proxy', b.thunk(value))));
+					declarations.push(b.declarator(declarator.id, b.call('$.derived', b.thunk(value))));
 				} else {
 					const bindings = state.scope.get_bindings(declarator);
 					const id = state.scope.generate('derived_value');
@@ -286,7 +286,7 @@ export const javascript_visitors_runes = {
 						b.declarator(
 							b.id(id),
 							b.call(
-								'$.derived_proxy',
+								'$.derived',
 								b.thunk(
 									b.block([
 										b.let(declarator.id, value),

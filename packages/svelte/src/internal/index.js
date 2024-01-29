@@ -7,7 +7,6 @@ export {
 	source,
 	mutable_source,
 	derived,
-	derived_proxy,
 	derived_safe_equal,
 	prop,
 	user_effect,
