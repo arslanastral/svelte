@@ -836,16 +836,15 @@ function update_derived(signal, force_schedule) {
 	if (derived_value === UNINITIALIZED) {
 		signal.v = derived_value = /** @type {import('./types.js').DerivedSignalValue<V>} */ ({
 			p: null,
-			v: UNINITIALIZED
+			v: UNINITIALIZED,
+			o: null
 		});
 	}
 	const previous_updating_derived = updating_derived;
 	updating_derived = true;
 	if (derived_value.p !== null) {
-		if (typeof signal.y === 'function') {
-			signal.y();
-		}
 		derived_value.p = null;
+		derived_value.o?.clear();
 	}
 	destroy_references(signal);
 	const value = execute_signal_fn(signal);
@@ -1415,29 +1414,35 @@ function is_last_current_dependency(signal) {
 /**
  * @template V
  * @param {import("./types.js").ComputationSignal<V>} signal
+ * @param {V} value
+ * @param {ProxyHandler<any>} handler
+ * @param {(string | symbol)[]} path
+ * @returns {V}
+ */
+function proxify_object(signal, value, handler, path) {
+	const keys = new Set(Reflect.ownKeys(/** @type {object} */ (value)));
+	const proxy = new Proxy(value, handler);
+	const derived_value = /** @type {import('./types.js').DerivedSignalValue<V>} */ (signal.v);
+	let proxied_objects = derived_value.o;
+	if (proxied_objects === null) {
+		derived_value.o = proxied_objects = new Map();
+	}
+	proxied_objects.set(value, {
+		x: proxy,
+		k: keys,
+		p: path
+	});
+	return proxy;
+}
+
+/**
+ * @template V
+ * @param {import("./types.js").ComputationSignal<V>} signal
  * @param {V} derived_value
  * @returns {V}
  */
 /*#__NO_SIDE_EFFECTS__*/
 function create_derived_proxy(signal, derived_value) {
-	const proxied_objects = new Map();
-
-	/**
-	 * @param {V} value
-	 * @param {(string | symbol)[]} path
-	 * @returns {V}
-	 */
-	function proxify_object(value, path) {
-		const keys = new Set(Reflect.ownKeys(/** @type {object} */ (value)));
-		const proxy = new Proxy(value, handler);
-		proxied_objects.set(value, {
-			x: proxy,
-			k: keys,
-			p: path
-		});
-		return proxy;
-	}
-
 	const handler = {
 		/**
 		 * @param {any} target
@@ -1446,6 +1451,8 @@ function create_derived_proxy(signal, derived_value) {
 		 */
 		get(target, prop, receiver) {
 			const value = Reflect.get(target, prop, receiver);
+			const derived_value = /** @type {import('./types.js').DerivedSignalValue<V>} */ (signal.v);
+			const proxied_objects = /** @type {any} */ (derived_value.o);
 			const { k: keys, p: path } = proxied_objects.get(target);
 
 			if (
@@ -1482,19 +1489,14 @@ function create_derived_proxy(signal, derived_value) {
 					if (!new_path) {
 						new_path = [...path, prop];
 					}
-					return proxify_object(value, new_path);
+					return proxify_object(signal, value, handler, new_path);
 				}
 			}
 			return value;
 		}
 	};
 
-	// Setup cleanup of proxied objects
-	signal.y = () => {
-		proxied_objects.clear();
-	};
-
-	return proxify_object(derived_value, []);
+	return proxify_object(signal, derived_value, handler, []);
 }
 
 /**

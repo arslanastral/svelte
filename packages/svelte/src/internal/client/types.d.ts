@@ -85,9 +85,10 @@ export type SourceSignalDebug = {
 };
 
 export type DerivedSignalValue<V> = {
-	v: V
-	p: null | V,
-}
+	v: V;
+	p: null | V;
+	o: null | Map<any, { x: any; k: Set<string | symbol>; p: Array<string | symbol> }>;
+};
 
 export type ComputationSignal<V = unknown> = {
 	/** block: The block associated with this effect/computed */
