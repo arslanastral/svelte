@@ -1,5 +1,13 @@
 # svelte
 
+## 5.0.0-next.42
+
+### Patch Changes
+
+- fix: replace TODO errors ([#10326](https://github.com/sveltejs/svelte/pull/10326))
+
+- fix: add proper typings for `$derived.call` ([`6145be5c695a063c70944272a42d9c63fdd71d64`](https://github.com/sveltejs/svelte/commit/6145be5c695a063c70944272a42d9c63fdd71d64))
+
 ## 5.0.0-next.41
 
 ### Patch Changes
